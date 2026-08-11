@@ -172,6 +172,63 @@ class CodexHookTests(unittest.TestCase):
             repeated["stop_hook_active"] = True
             self.assertIsNone(handle_codex_hook(repeated, env))
 
+    def test_repeated_stop_rechecks_when_new_evidence_arrives(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {STATE_DIR_ENV: str(root / "state")}
+            enable_project(root, env)
+            first_evidence = _post_event(root)
+            first_evidence["tool_response"] = "Ran 1 test\nOK"
+            handle_codex_hook(first_evidence, env)
+            evaluations = 0
+
+            def evaluator(message, evidence, evaluator_env):
+                nonlocal evaluations
+                evaluations += 1
+                if len(evidence) == 1:
+                    return {
+                        "verdict": "UNSUPPORTED",
+                        "claims": [
+                            {
+                                "claim": "tests passed with exit code 0",
+                                "status": "UNSUPPORTED",
+                                "evidence_ids": ["tool-1"],
+                                "reason": "the first evidence omitted the exit code",
+                            }
+                        ],
+                        "summary": "The exit-code claim is unsupported.",
+                    }
+                return {
+                    "verdict": "SUPPORTED",
+                    "claims": [
+                        {
+                            "claim": "tests passed with exit code 0",
+                            "status": "SUPPORTED",
+                            "evidence_ids": ["tool-2"],
+                            "reason": "the new evidence reports OK and exit code 0",
+                        }
+                    ],
+                    "summary": "The execution claim is supported.",
+                }
+
+            stop = _stop_event(root, "All tests passed with exit code 0.")
+            blocked = handle_codex_hook(stop, env, evaluator)
+            self.assertEqual(blocked["decision"], "block")
+
+            second_evidence = _post_event(root)
+            second_evidence["tool_use_id"] = "tool-2"
+            second_evidence["tool_response"] = (
+                "Ran 1 test\nOK\nUNITTEST_EXIT_CODE=0"
+            )
+            handle_codex_hook(second_evidence, env)
+            repeated = _stop_event(root, "All tests passed with exit code 0.")
+            repeated["stop_hook_active"] = True
+
+            self.assertIsNone(handle_codex_hook(repeated, env, evaluator))
+            self.assertEqual(evaluations, 2)
+            receipt = latest_claim_receipt(root, env)
+            self.assertEqual(receipt["verdict"], "SUPPORTED")
+
     def test_evidence_is_redacted_before_storage(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

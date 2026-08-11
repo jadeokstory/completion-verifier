@@ -29,7 +29,7 @@ Codex requires non-managed hooks to be reviewed and trusted. Use `/hooks` after 
 
 ```text
 Codex command completes
-  -> PostToolUse records redacted command, exit code, output hash, and output excerpt
+  -> PostToolUse records redacted command, available exit code, output hash, and output excerpt
 
 Codex tries to stop
   -> no positive execution claim: allow without a model call
@@ -38,9 +38,12 @@ Codex tries to stop
        -> NO_VERIFIABLE_CLAIM: allow
        -> UNSUPPORTED: block once and return the missing evidence to Codex
        -> evaluator error: mark UNPROVEN and block once
+  -> repeated Stop after a block
+       -> new same-turn evidence: evaluate again
+       -> no new evidence: skip to prevent a blocking loop
 ```
 
-`stop_hook_active` prevents repeated blocking of the same turn. `COMPLETION_VERIFIER_NESTED=1` and `codex exec --disable hooks` prevent recursive verification.
+`stop_hook_active` prevents blocking loops while still allowing recovery. A repeated Stop is evaluated again only when the same turn gained new evidence after its last `UNSUPPORTED` or `UNPROVEN` receipt. `COMPLETION_VERIFIER_NESTED=1` and `codex exec --disable hooks` prevent recursive verification.
 
 ## Evidence boundary
 

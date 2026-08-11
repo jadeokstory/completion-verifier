@@ -435,6 +435,39 @@ def _load_evidence(
     return events[-_MAX_EVIDENCE_ITEMS:]
 
 
+def _evidence_fingerprints(
+    evidence: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    return [
+        (
+            str(item.get("evidence_id") or ""),
+            str(item.get("output_sha256") or ""),
+        )
+        for item in evidence
+    ]
+
+
+def _should_recheck_repeated_stop(
+    project_root: Path,
+    input_data: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    env: Mapping[str, str] | None,
+) -> bool:
+    receipt = _read_json_object(_receipt_path(project_root, input_data, env))
+    if receipt is None:
+        return False
+    if receipt.get("turn_id") != input_data.get("turn_id"):
+        return False
+    if receipt.get("verdict") not in {"UNSUPPORTED", "UNPROVEN"}:
+        return False
+    previous_evidence = receipt.get("evidence")
+    if not isinstance(previous_evidence, list):
+        previous_evidence = []
+    return _evidence_fingerprints(evidence) != _evidence_fingerprints(
+        [item for item in previous_evidence if isinstance(item, dict)]
+    )
+
+
 def _evaluation_schema_path() -> Path:
     return Path(__file__).with_name("claim-evaluation.schema.json")
 
@@ -691,7 +724,10 @@ def handle_codex_hook(
     if event_name == "PostToolUse":
         _record_post_tool_use(project_root, input_data, values)
         return None
-    if input_data.get("stop_hook_active") is True:
+    evidence = _load_evidence(project_root, input_data, values)
+    if input_data.get("stop_hook_active") is True and not _should_recheck_repeated_stop(
+        project_root, input_data, evidence, values
+    ):
         return None
 
     raw_message = input_data.get("last_assistant_message")
@@ -699,7 +735,6 @@ def handle_codex_hook(
     redacted_message = redact(assistant_message).text
     if len(redacted_message) > _MESSAGE_LIMIT:
         redacted_message = redacted_message[-_MESSAGE_LIMIT:]
-    evidence = _load_evidence(project_root, input_data, values)
     if not _EXECUTION_CLAIM_PATTERN.search(redacted_message):
         evaluation = {
             "verdict": "NO_VERIFIABLE_CLAIM",
