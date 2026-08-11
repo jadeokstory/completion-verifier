@@ -88,9 +88,9 @@ See [the full contract](docs/CONTRACT_V0.1.md) and the [published JSON Schema](s
 
 ## Receipt trust boundary
 
-Receipts record timestamps, working directory, Git state before and after the run, exact check outcomes, command/output hashes, file size/mtime/hash, and whether basic secret-shape redaction was applied.
+Receipts record timestamps, working directory, Git state and porcelain-status fingerprints before and after the run, exact check outcomes, command/output hashes, file size/mtime/hash, and whether basic secret-shape redaction was applied. `changed_during_run` reports whether the observable Git state differs between those two snapshots.
 
-A hash binds the receipt to captured bytes; it does not prove semantic correctness, authorship, or resistance to a malicious local process. Redaction covers common secret shapes but cannot guarantee that arbitrary sensitive output is recognized. Commands should avoid printing secrets.
+The output hash is SHA-256 over the raw captured stdout bytes, a NUL separator, and the raw captured stderr bytes. It does not prove semantic correctness, authorship, or resistance to a malicious local process. Redaction covers common secret shapes, including AWS credential assignments, database URL assignments, bearer tokens, and URI passwords, but cannot guarantee that arbitrary sensitive output is recognized. Commands should avoid printing secrets.
 
 ## Non-goals for this prototype
 

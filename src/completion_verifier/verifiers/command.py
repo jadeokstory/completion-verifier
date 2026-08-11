@@ -12,12 +12,16 @@ from ..verdict import Verdict
 _OUTPUT_LIMIT = 4_000
 
 
-def _as_text(value: str | bytes | None) -> str:
+def _as_bytes(value: str | bytes | None) -> bytes:
     if value is None:
-        return ""
+        return b""
     if isinstance(value, bytes):
-        return value.decode("utf-8", errors="replace")
-    return value
+        return value
+    return value.encode("utf-8")
+
+
+def _as_text(value: bytes) -> str:
+    return value.decode("utf-8", errors="replace")
 
 
 def _excerpt(value: str) -> tuple[str, bool]:
@@ -31,8 +35,8 @@ def verify_command(check: dict[str, Any], root: Path) -> dict[str, Any]:
     started = utc_now()
     exit_code: int | None = None
     timed_out = False
-    stdout = ""
-    stderr = ""
+    stdout_bytes = b""
+    stderr_bytes = b""
 
     try:
         completed = subprocess.run(
@@ -40,13 +44,11 @@ def verify_command(check: dict[str, Any], root: Path) -> dict[str, Any]:
             cwd=root,
             capture_output=True,
             check=False,
-            text=True,
-            errors="replace",
             timeout=check["timeout_seconds"],
         )
         exit_code = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
+        stdout_bytes = completed.stdout
+        stderr_bytes = completed.stderr
         if exit_code == 0:
             verdict = Verdict.PASS
             reason = "command exited with code 0"
@@ -55,8 +57,8 @@ def verify_command(check: dict[str, Any], root: Path) -> dict[str, Any]:
             reason = f"command exited with code {exit_code}"
     except subprocess.TimeoutExpired as error:
         timed_out = True
-        stdout = _as_text(error.stdout)
-        stderr = _as_text(error.stderr)
+        stdout_bytes = _as_bytes(error.stdout)
+        stderr_bytes = _as_bytes(error.stderr)
         verdict = Verdict.FAIL
         reason = f"command exceeded timeout of {check['timeout_seconds']} seconds"
     except FileNotFoundError:
@@ -70,12 +72,12 @@ def verify_command(check: dict[str, Any], root: Path) -> dict[str, Any]:
         reason = f"could not start command: {error.strerror or error}"
 
     finished = utc_now()
-    output_sha256 = hashlib.sha256(
-        stdout.encode("utf-8") + b"\0" + stderr.encode("utf-8")
-    ).hexdigest()
+    output_sha256 = hashlib.sha256(stdout_bytes + b"\0" + stderr_bytes).hexdigest()
     command_sha256 = hashlib.sha256(
         json.dumps(command, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+    stdout = _as_text(stdout_bytes)
+    stderr = _as_text(stderr_bytes)
     redacted_arguments = [redact(argument) for argument in command]
     reason_redacted = redact(reason)
     stdout_redacted = redact(stdout)

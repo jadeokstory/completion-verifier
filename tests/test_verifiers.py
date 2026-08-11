@@ -1,3 +1,4 @@
+import hashlib
 import os
 import sys
 import tempfile
@@ -10,6 +11,27 @@ from completion_verifier.verifiers.file import verify_file
 
 
 class CommandVerifierTests(unittest.TestCase):
+    def test_output_hash_uses_raw_captured_bytes(self) -> None:
+        stdout_bytes = bytes([255, 13, 10])
+        with tempfile.TemporaryDirectory() as directory:
+            result = verify_command(
+                {
+                    "id": "binary-output",
+                    "type": "command",
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        "import os; os.write(1, bytes([255, 13, 10]))",
+                    ],
+                    "timeout_seconds": 5,
+                },
+                Path(directory),
+            )
+
+        expected = hashlib.sha256(stdout_bytes + b"\0").hexdigest()
+        self.assertEqual(result["evidence"]["output_sha256"], expected)
+        self.assertEqual(result["evidence"]["stdout"], "\ufffd\r\n")
+
     def test_pass_and_redacted_evidence(self) -> None:
         assigned_value = "value" * 4
         with tempfile.TemporaryDirectory() as directory:

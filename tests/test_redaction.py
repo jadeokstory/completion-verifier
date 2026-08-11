@@ -32,3 +32,31 @@ class RedactionTests(unittest.TestCase):
         result = redact("84 tests passed")
         self.assertFalse(result.applied)
         self.assertEqual(result.text, "84 tests passed")
+
+    def test_aws_credentials_and_database_urls_are_redacted(self) -> None:
+        aws_secret = "FAKE" + "awsSecretValue" + "1234567890"
+        database_password = "FAKE" + "dbPassword"
+        source = (
+            "AWS_SECRET_ACCESS_KEY="
+            + aws_secret
+            + "\nDATABASE_URL=postgres://user:"
+            + database_password
+            + "@localhost/db\n"
+        )
+
+        result = redact(source)
+
+        self.assertTrue(result.applied)
+        self.assertNotIn(aws_secret, result.text)
+        self.assertNotIn(database_password, result.text)
+        self.assertEqual(result.text.count("[REDACTED]"), 2)
+
+    def test_non_http_uri_password_is_redacted(self) -> None:
+        password = "credential" * 2
+        result = redact(f"postgres://user:{password}@localhost/db")
+
+        self.assertTrue(result.applied)
+        self.assertNotIn(password, result.text)
+        self.assertEqual(
+            result.text, "postgres://user:[REDACTED]@localhost/db"
+        )

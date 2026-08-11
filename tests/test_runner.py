@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,58 @@ def _write_contract(root: Path, checks: list[dict[str, object]]) -> Path:
 
 
 class RunnerTests(unittest.TestCase):
+    def test_dirty_git_state_detects_new_file_created_during_run(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            contract_path = _write_contract(
+                root,
+                [
+                    {
+                        "id": "create-file",
+                        "type": "command",
+                        "command": [
+                            sys.executable,
+                            "-c",
+                            "from pathlib import Path; Path('created.txt').write_text('new')",
+                        ],
+                        "timeout_seconds": 5,
+                    }
+                ],
+            )
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            subprocess.run(
+                ["git", "-C", str(root), "config", "user.name", "Test User"],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "config",
+                    "user.email",
+                    "test@example.invalid",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "add", contract_path.name], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(root), "commit", "-qm", "initial"], check=True
+            )
+            (root / "already-dirty.txt").write_text("existing", encoding="utf-8")
+
+            receipt = run_contract(load_contract(contract_path))
+
+        self.assertTrue(receipt["git"]["before"]["dirty"])
+        self.assertTrue(receipt["git"]["after"]["dirty"])
+        self.assertNotEqual(
+            receipt["git"]["before"]["status_sha256"],
+            receipt["git"]["after"]["status_sha256"],
+        )
+        self.assertTrue(receipt["git"]["changed_during_run"])
+
     def test_command_can_create_fresh_file_for_later_check(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
