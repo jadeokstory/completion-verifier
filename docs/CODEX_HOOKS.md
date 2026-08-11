@@ -32,18 +32,17 @@ Codex command completes
   -> PostToolUse records redacted command, available exit code, output hash, and output excerpt
 
 Codex tries to stop
-  -> no positive execution claim: allow without a model call
-  -> positive execution claim: run compact read-only codex exec matcher
+  -> run compact read-only codex exec matcher for every Stop
        -> SUPPORTED: allow
        -> NO_VERIFIABLE_CLAIM: allow
-       -> UNSUPPORTED: block once and return the missing evidence to Codex
-       -> evaluator error: mark UNPROVEN and block once
+       -> UNSUPPORTED: block and return the missing evidence to Codex
+       -> evaluator error: mark UNPROVEN and block
   -> repeated Stop after a block
        -> new same-turn evidence: evaluate again
-       -> no new evidence: skip to prevent a blocking loop
+       -> no new evidence: remain blocked without another model call
 ```
 
-`stop_hook_active` prevents blocking loops while still allowing recovery. A repeated Stop is evaluated again only when the same turn gained new evidence after its last `UNSUPPORTED` or `UNPROVEN` receipt. `COMPLETION_VERIFIER_NESTED=1` and `codex exec --disable hooks` prevent recursive verification.
+`stop_hook_active` prevents redundant model calls while preserving the gate. A repeated Stop is evaluated again only when the same turn gained new evidence after its last `UNSUPPORTED` or `UNPROVEN` receipt; otherwise the prior block remains in force. `COMPLETION_VERIFIER_NESTED=1` and `codex exec --disable hooks` prevent recursive verification.
 
 ## Evidence boundary
 
@@ -54,11 +53,11 @@ Each evidence item contains:
 - evidence id;
 - observed time;
 - redacted command text;
-- exit code when the tool response exposes one;
+- exit code only when Codex's owner-controlled session transcript contains a structured command result matching the same session, turn, and exact tool output;
 - SHA-256 of the raw tool response;
 - a redacted, bounded output excerpt.
 
-The raw tool response is not persisted. Common secret shapes are redacted before command text or excerpts are stored or sent to the matcher. Redaction is best effort; commands should still avoid printing secrets.
+The raw tool response is not persisted, and exit-code-looking stdout is never trusted as process status. Common secret shapes, including quoted credential fields, authorization headers, and private-key blocks, are redacted before command text or excerpts are stored or sent to the matcher. Redaction is best effort; commands should still avoid printing secrets.
 
 ## Matcher boundary
 

@@ -42,9 +42,9 @@ This installs user-level `PostToolUse` and `Stop` hooks and enables them only fo
 No `completion-verifier.yml` is required for this mode. The integration:
 
 1. records redacted command evidence from `PostToolUse`;
-2. ignores turns with no positive execution claim;
-3. gives a compact same-turn claim-and-evidence bundle to an ephemeral, read-only `codex exec`;
-4. allows supported claims and blocks unsupported claims once with a concrete reason.
+2. gives every Stop message and a compact same-turn evidence bundle to an ephemeral, read-only `codex exec`;
+3. allows supported messages and messages with no execution claim;
+4. blocks unsupported claims until the report is corrected or new evidence is recorded.
 
 It does not review code quality, rerun tests, or inspect the repository during claim matching. The nested Codex run starts in an empty temporary directory, ignores user configuration and rules, disables hooks, and uses the authentication already saved by the Codex CLI.
 

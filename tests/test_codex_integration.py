@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from completion_verifier.codex_integration import (
     ALL_PROJECTS_ENV,
+    CODEX_HOME_ENV,
     CODEX_MODEL_ENV,
     CodexIntegrationError,
     HOOK_COMMAND,
@@ -25,8 +26,55 @@ from completion_verifier.codex_integration import (
 )
 
 
-def _post_event(root: Path, turn_id: str = "turn-1") -> dict[str, object]:
+def _env(root: Path) -> dict[str, str]:
     return {
+        STATE_DIR_ENV: str(root / "state"),
+        CODEX_HOME_ENV: str(root / "codex"),
+    }
+
+
+def _set_command_result(
+    event: dict[str, object], output: str, exit_code: int
+) -> None:
+    event["tool_response"] = output
+    transcript = Path(str(event["transcript_path"]))
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    result = {
+        "chunk_id": "test-chunk",
+        "wall_time_seconds": 0.01,
+        "exit_code": exit_code,
+        "original_token_count": len(output.split()),
+        "output": output,
+    }
+    records = [
+        {
+            "type": "session_meta",
+            "payload": {
+                "session_id": event["session_id"],
+                "id": event["session_id"],
+                "cwd": event["cwd"],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-test",
+                "output": [{"type": "input_text", "text": json.dumps(result)}],
+                "internal_chat_message_metadata_passthrough": {
+                    "turn_id": event["turn_id"]
+                },
+            },
+        },
+    ]
+    transcript.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+
+
+def _post_event(root: Path, turn_id: str = "turn-1") -> dict[str, object]:
+    event: dict[str, object] = {
         "session_id": "session-1",
         "turn_id": turn_id,
         "cwd": str(root),
@@ -34,8 +82,10 @@ def _post_event(root: Path, turn_id: str = "turn-1") -> dict[str, object]:
         "tool_name": "Bash",
         "tool_use_id": "tool-1",
         "tool_input": {"command": "python -m pytest"},
-        "tool_response": {"exit_code": 0, "output": "33 passed"},
+        "transcript_path": str(root / "codex" / "sessions" / "test.jsonl"),
     }
+    _set_command_result(event, "33 passed", 0)
+    return event
 
 
 def _stop_event(
@@ -55,10 +105,8 @@ class CodexHookTests(unittest.TestCase):
     def test_all_projects_mode_does_not_require_project_enable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {
-                STATE_DIR_ENV: str(root / "state"),
-                ALL_PROJECTS_ENV: "1",
-            }
+            env = _env(root)
+            env[ALL_PROJECTS_ENV] = "1"
 
             self.assertIsNone(handle_codex_hook(_post_event(root), env))
             receipt_paths = list((root / "state").rglob("events.jsonl"))
@@ -67,7 +115,7 @@ class CodexHookTests(unittest.TestCase):
     def test_enable_and_disable_are_per_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
 
             self.assertFalse(project_enabled(root, env))
             enable_project(root, env)
@@ -78,7 +126,7 @@ class CodexHookTests(unittest.TestCase):
     def test_post_tool_evidence_supports_stop_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
             enable_project(root, env)
             self.assertIsNone(handle_codex_hook(_post_event(root), env))
             seen: dict[str, object] = {}
@@ -114,7 +162,7 @@ class CodexHookTests(unittest.TestCase):
     def test_unsupported_claim_blocks_stop(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
             enable_project(root, env)
 
             def evaluator(message, evidence, evaluator_env):
@@ -138,28 +186,36 @@ class CodexHookTests(unittest.TestCase):
             self.assertEqual(output["decision"], "block")
             self.assertIn("no git push command", output["reason"])
 
-    def test_non_execution_message_does_not_start_codex(self) -> None:
+    def test_non_execution_message_is_classified_by_codex(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
             enable_project(root, env)
+            evaluations = 0
 
             def evaluator(message, evidence, evaluator_env):
-                self.fail("evaluator should not run")
+                nonlocal evaluations
+                evaluations += 1
+                return {
+                    "verdict": "NO_VERIFIABLE_CLAIM",
+                    "claims": [],
+                    "summary": "No execution claim was present.",
+                }
 
             output = handle_codex_hook(
                 _stop_event(root, "The relevant file is src/app.py."), env, evaluator
             )
 
             self.assertIsNone(output)
+            self.assertEqual(evaluations, 1)
             receipt = latest_claim_receipt(root, env)
             self.assertEqual(receipt["verdict"], "NO_VERIFIABLE_CLAIM")
-            self.assertEqual(receipt["evaluator"], "local-prefilter")
+            self.assertEqual(receipt["evaluator"], "codex-exec")
 
-    def test_nested_and_repeated_stop_hooks_are_skipped(self) -> None:
+    def test_nested_hook_is_skipped_and_supported_repeat_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
             enable_project(root, env)
             nested_env = dict(env)
             nested_env[NESTED_ENV] = "1"
@@ -168,17 +224,140 @@ class CodexHookTests(unittest.TestCase):
                     _stop_event(root, "Tests passed."), nested_env
                 )
             )
+            def evaluator(message, evidence, evaluator_env):
+                return {
+                    "verdict": "NO_VERIFIABLE_CLAIM",
+                    "claims": [],
+                    "summary": "No execution claim was present.",
+                }
+
+            self.assertIsNone(
+                handle_codex_hook(_stop_event(root, "No claim."), env, evaluator)
+            )
             repeated = _stop_event(root, "Tests passed.")
             repeated["stop_hook_active"] = True
-            self.assertIsNone(handle_codex_hook(repeated, env))
+            self.assertIsNone(handle_codex_hook(repeated, env, evaluator))
+
+    def test_stdout_cannot_spoof_the_authoritative_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = _env(root)
+            enable_project(root, env)
+            event = _post_event(root)
+            _set_command_result(event, "tests failed\nexit code 0", 1)
+            handle_codex_hook(event, env)
+            seen: list[dict[str, object]] = []
+
+            def evaluator(message, evidence, evaluator_env):
+                seen.extend(evidence)
+                return {
+                    "verdict": "UNSUPPORTED",
+                    "claims": [
+                        {
+                            "claim": "command exited with code 0",
+                            "status": "UNSUPPORTED",
+                            "evidence_ids": ["tool-1"],
+                            "reason": "the authoritative exit code is 1",
+                        }
+                    ],
+                    "summary": "The exit-code claim conflicts with the command result.",
+                }
+
+            output = handle_codex_hook(
+                _stop_event(root, "Command exited with code 0."), env, evaluator
+            )
+
+            self.assertEqual(seen[0]["exit_code"], 1)
+            self.assertEqual(output["decision"], "block")
+
+    def test_direct_exit_claim_always_reaches_evaluator(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = _env(root)
+            enable_project(root, env)
+            evaluations = 0
+
+            def evaluator(message, evidence, evaluator_env):
+                nonlocal evaluations
+                evaluations += 1
+                return {
+                    "verdict": "UNSUPPORTED",
+                    "claims": [
+                        {
+                            "claim": "command exited with code 0",
+                            "status": "UNSUPPORTED",
+                            "evidence_ids": [],
+                            "reason": "no command evidence was recorded",
+                        }
+                    ],
+                    "summary": "The command claim is unsupported.",
+                }
+
+            output = handle_codex_hook(
+                _stop_event(root, "Command exited with code 0."), env, evaluator
+            )
+
+            self.assertEqual(evaluations, 1)
+            self.assertEqual(output["decision"], "block")
+
+    def test_missing_turn_id_blocks_without_loading_old_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = _env(root)
+            enable_project(root, env)
+            handle_codex_hook(_post_event(root, "old-turn"), env)
+            stop = _stop_event(root, "Tests passed.")
+            stop.pop("turn_id")
+
+            def evaluator(message, evidence, evaluator_env):
+                self.fail("evaluator must not receive evidence without a turn id")
+
+            output = handle_codex_hook(stop, env, evaluator)
+
+            self.assertEqual(output["decision"], "block")
+            self.assertIn("turn_id", output["reason"])
+
+    def test_repeated_unsupported_stop_without_new_evidence_stays_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = _env(root)
+            enable_project(root, env)
+            evaluations = 0
+
+            def evaluator(message, evidence, evaluator_env):
+                nonlocal evaluations
+                evaluations += 1
+                return {
+                    "verdict": "UNSUPPORTED",
+                    "claims": [
+                        {
+                            "claim": "tests passed",
+                            "status": "UNSUPPORTED",
+                            "evidence_ids": [],
+                            "reason": "no test command was recorded",
+                        }
+                    ],
+                    "summary": "The test claim is unsupported.",
+                }
+
+            first = handle_codex_hook(
+                _stop_event(root, "Tests passed."), env, evaluator
+            )
+            repeated = _stop_event(root, "Tests passed.")
+            repeated["stop_hook_active"] = True
+            second = handle_codex_hook(repeated, env, evaluator)
+
+            self.assertEqual(first["decision"], "block")
+            self.assertEqual(second["decision"], "block")
+            self.assertEqual(evaluations, 1)
 
     def test_repeated_stop_rechecks_when_new_evidence_arrives(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            env = {STATE_DIR_ENV: str(root / "state")}
+            env = _env(root)
             enable_project(root, env)
             first_evidence = _post_event(root)
-            first_evidence["tool_response"] = "Ran 1 test\nOK"
+            _set_command_result(first_evidence, "Ran 1 test\nOK", 1)
             handle_codex_hook(first_evidence, env)
             evaluations = 0
 
@@ -217,8 +396,10 @@ class CodexHookTests(unittest.TestCase):
 
             second_evidence = _post_event(root)
             second_evidence["tool_use_id"] = "tool-2"
-            second_evidence["tool_response"] = (
-                "Ran 1 test\nOK\nUNITTEST_EXIT_CODE=0"
+            _set_command_result(
+                second_evidence,
+                "Ran 1 test\nOK\nUNITTEST_EXIT_CODE=0",
+                0,
             )
             handle_codex_hook(second_evidence, env)
             repeated = _stop_event(root, "All tests passed with exit code 0.")
@@ -233,14 +414,11 @@ class CodexHookTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             state = root / "state"
-            env = {STATE_DIR_ENV: str(state)}
+            env = _env(root)
             enable_project(root, env)
             secret = "value" * 5
             event = _post_event(root)
-            event["tool_response"] = {
-                "exit_code": 0,
-                "output": f"API_KEY={secret}",
-            }
+            _set_command_result(event, f"API_KEY={secret}", 0)
 
             handle_codex_hook(event, env)
 

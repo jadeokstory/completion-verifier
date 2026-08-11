@@ -60,3 +60,37 @@ class RedactionTests(unittest.TestCase):
         self.assertEqual(
             result.text, "postgres://user:[REDACTED]@localhost/db"
         )
+
+    def test_quoted_json_credentials_are_redacted(self) -> None:
+        password = "quoted-secret-value"
+        token = "quoted-access-token"
+        result = redact(
+            '{"password": "'
+            + password
+            + '", "access_token": "'
+            + token
+            + '"}'
+        )
+
+        self.assertTrue(result.applied)
+        self.assertNotIn(password, result.text)
+        self.assertNotIn(token, result.text)
+        self.assertEqual(result.text.count("[REDACTED]"), 2)
+
+    def test_basic_authorization_is_redacted(self) -> None:
+        credentials = "dXNlcjpwYXNzd29yZA=="
+        result = redact("Authorization: Basic " + credentials)
+
+        self.assertTrue(result.applied)
+        self.assertNotIn(credentials, result.text)
+
+    def test_multiline_private_key_is_redacted(self) -> None:
+        key_body = "synthetic-key-material"
+        begin = "-----BE" + "GIN PRIVATE KEY-----"
+        end = "-----E" + "ND PRIVATE KEY-----"
+        source = "before\n" + begin + "\n" + key_body + "\n" + end + "\nafter"
+        result = redact(source)
+
+        self.assertTrue(result.applied)
+        self.assertNotIn(key_body, result.text)
+        self.assertEqual(result.text, "before\n[REDACTED]\nafter")

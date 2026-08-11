@@ -46,10 +46,9 @@ For isolated testing, `--hooks-file` and `--runtime-dir` override both destinati
 ## Hook behavior
 
 - `PostToolUse` records redacted `Bash` command evidence.
-- `Stop` avoids a model call when the answer has no positive execution-claim keyword.
-- Relevant answers are matched against at most 20 same-turn evidence items by an ephemeral, read-only `codex exec`.
+- Every `Stop` answer is matched against at most 20 same-turn evidence items by an ephemeral, read-only `codex exec`.
 - The nested process disables hooks, user configuration, and repository access.
-- Unsupported claims block Stop once with the missing evidence.
+- Unsupported claims remain blocked until the report is corrected or new same-turn evidence is recorded.
 - Matcher errors are recorded as `UNPROVEN` and never upgraded to supported.
 
 The matcher reuses the Codex CLI's existing saved authentication. ProofGate does not read or copy authentication files.

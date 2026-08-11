@@ -1,7 +1,7 @@
 import hashlib
 import json
 import os
-import re
+import stat
 import subprocess
 import tempfile
 from datetime import datetime, timezone
@@ -18,19 +18,12 @@ CODEX_BIN_ENV = "COMPLETION_VERIFIER_CODEX_BIN"
 CODEX_MODEL_ENV = "COMPLETION_VERIFIER_CODEX_MODEL"
 CODEX_TIMEOUT_ENV = "COMPLETION_VERIFIER_CODEX_TIMEOUT_SECONDS"
 ALL_PROJECTS_ENV = "COMPLETION_VERIFIER_ALL_PROJECTS"
+CODEX_HOME_ENV = "CODEX_HOME"
 
 _OUTPUT_LIMIT = 4_000
 _MESSAGE_LIMIT = 6_000
 _MAX_EVIDENCE_ITEMS = 20
-_EXECUTION_CLAIM_PATTERN = re.compile(
-    r"(?i)(?:\b(?:tests?|pytest|unittest|build|built|lint|typecheck|compile|"
-    r"install(?:ed|ing)?|deploy(?:ed|ing)?|push(?:ed|ing)?|publish(?:ed|ing)?|"
-    r"verify|verified|pass(?:ed)?|ran|run|executed)\b|"
-    r"테스트|빌드|린트|타입\s*검사|컴파일|설치|배포|푸시|게시|실행|검증|통과)"
-)
-_EXIT_CODE_PATTERN = re.compile(
-    r"(?i)(?:exit(?:ed)?(?:\s+with)?(?:\s+code)?|exit_code)[\s\"':=]+(-?\d+)"
-)
+_MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 
 
 class CodexIntegrationError(Exception):
@@ -327,26 +320,99 @@ def _as_text(value: Any) -> str:
         return str(value)
 
 
-def _find_exit_code(value: Any) -> int | None:
-    if isinstance(value, dict):
-        for key in ("exit_code", "exitCode", "returncode", "return_code"):
-            candidate = value.get(key)
-            if isinstance(candidate, int) and not isinstance(candidate, bool):
-                return candidate
-        for candidate in value.values():
-            found = _find_exit_code(candidate)
-            if found is not None:
-                return found
-    elif isinstance(value, list):
-        for candidate in value:
-            found = _find_exit_code(candidate)
-            if found is not None:
-                return found
-    elif isinstance(value, str):
-        match = _EXIT_CODE_PATTERN.search(value)
-        if match:
-            return int(match.group(1))
-    return None
+def _codex_sessions_root(env: Mapping[str, str]) -> Path:
+    codex_home = env.get(CODEX_HOME_ENV)
+    home = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
+    return home / "sessions"
+
+
+def _authoritative_exit_code(
+    input_data: dict[str, Any],
+    raw_response: str,
+    env: Mapping[str, str],
+) -> int | None:
+    """Read the real command result from Codex's owner-controlled transcript.
+
+    Tool stdout is untrusted and can contain exit-code-looking text. The transcript
+    result is accepted only when its session, turn, and exact output all match the
+    current hook event.
+    """
+
+    transcript_value = input_data.get("transcript_path")
+    if not isinstance(transcript_value, str) or not transcript_value:
+        return None
+    transcript = Path(transcript_value).expanduser()
+    try:
+        if transcript.is_symlink():
+            return None
+        resolved = transcript.resolve(strict=True)
+        sessions_root = _codex_sessions_root(env).resolve(strict=True)
+        if not resolved.is_relative_to(sessions_root):
+            return None
+        metadata = resolved.stat()
+    except OSError:
+        return None
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    if hasattr(os, "getuid") and metadata.st_uid != os.getuid():
+        return None
+    if metadata.st_mode & 0o022 or metadata.st_size > _MAX_TRANSCRIPT_BYTES:
+        return None
+
+    session_id = input_data["session_id"]
+    turn_id = input_data["turn_id"]
+    session_matches = False
+    exit_code: int | None = None
+    try:
+        with resolved.open("r", encoding="utf-8") as transcript_file:
+            for line in transcript_file:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(record, dict):
+                    continue
+                payload = record.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if record.get("type") == "session_meta":
+                    session_matches = (
+                        payload.get("session_id") == session_id
+                        and payload.get("id") == session_id
+                    )
+                    continue
+                if (
+                    record.get("type") != "response_item"
+                    or payload.get("type") != "custom_tool_call_output"
+                ):
+                    continue
+                passthrough = payload.get("internal_chat_message_metadata_passthrough")
+                if not isinstance(passthrough, dict) or passthrough.get("turn_id") != turn_id:
+                    continue
+                output_items = payload.get("output")
+                if not isinstance(output_items, list):
+                    continue
+                for item in output_items:
+                    if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+                        continue
+                    try:
+                        command_result = json.loads(item["text"])
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(command_result, dict):
+                        continue
+                    candidate = command_result.get("exit_code")
+                    if (
+                        isinstance(candidate, int)
+                        and not isinstance(candidate, bool)
+                        and isinstance(command_result.get("wall_time_seconds"), (int, float))
+                        and isinstance(command_result.get("original_token_count"), int)
+                        and command_result.get("output") == raw_response
+                    ):
+                        exit_code = candidate
+    except (OSError, UnicodeError):
+        return None
+    return exit_code if session_matches else None
 
 
 def _append_event(path: Path, event: dict[str, Any]) -> None:
@@ -399,7 +465,7 @@ def _record_post_tool_use(
         "observed_at": _now(),
         "turn_id": input_data.get("turn_id"),
         "command": redacted_command.text,
-        "exit_code": _find_exit_code(response),
+        "exit_code": _authoritative_exit_code(input_data, raw_response, env or os.environ),
         "output_sha256": hashlib.sha256(raw_response.encode("utf-8")).hexdigest(),
         "output_summary": summary,
         "output_truncated": truncated,
@@ -422,6 +488,8 @@ def _load_evidence(
         raise CodexIntegrationError(f"cannot read command evidence: {error}")
     events: list[dict[str, Any]] = []
     turn_id = input_data.get("turn_id")
+    if not isinstance(turn_id, str) or not turn_id:
+        return []
     for line in lines:
         try:
             event = json.loads(line)
@@ -429,7 +497,7 @@ def _load_evidence(
             continue
         if not isinstance(event, dict):
             continue
-        if turn_id is not None and event.get("turn_id") != turn_id:
+        if event.get("turn_id") != turn_id:
             continue
         events.append(event)
     return events[-_MAX_EVIDENCE_ITEMS:]
@@ -447,25 +515,36 @@ def _evidence_fingerprints(
     ]
 
 
-def _should_recheck_repeated_stop(
+def _repeated_stop_action(
     project_root: Path,
     input_data: dict[str, Any],
     evidence: list[dict[str, Any]],
     env: Mapping[str, str] | None,
-) -> bool:
+) -> tuple[bool, dict[str, str] | None]:
     receipt = _read_json_object(_receipt_path(project_root, input_data, env))
-    if receipt is None:
-        return False
+    if not receipt:
+        return True, None
     if receipt.get("turn_id") != input_data.get("turn_id"):
-        return False
-    if receipt.get("verdict") not in {"UNSUPPORTED", "UNPROVEN"}:
-        return False
+        return True, None
+    verdict = receipt.get("verdict")
+    if verdict not in {"UNSUPPORTED", "UNPROVEN"}:
+        return False, None
     previous_evidence = receipt.get("evidence")
     if not isinstance(previous_evidence, list):
         previous_evidence = []
-    return _evidence_fingerprints(evidence) != _evidence_fingerprints(
+    evidence_changed = _evidence_fingerprints(evidence) != _evidence_fingerprints(
         [item for item in previous_evidence if isinstance(item, dict)]
     )
+    if evidence_changed:
+        return True, None
+    summary = str(receipt.get("summary") or "Execution claims remain unproven.")
+    return False, {
+        "decision": "block",
+        "reason": (
+            "Completion Verifier still has no new evidence for this turn. "
+            f"{summary} Run the missing command or correct the final report."
+        ),
+    }
 
 
 def _evaluation_schema_path() -> Path:
@@ -713,6 +792,28 @@ def handle_codex_hook(
     event_name = input_data.get("hook_event_name")
     if event_name not in {"PostToolUse", "Stop"}:
         return None
+    missing_ids = [
+        name
+        for name in ("session_id", "turn_id")
+        if not isinstance(input_data.get(name), str) or not input_data.get(name)
+    ]
+    if missing_ids:
+        if event_name == "Stop":
+            return {
+                "decision": "block",
+                "reason": (
+                    "Completion Verifier cannot bind evidence to this turn because "
+                    f"the Codex hook omitted {', '.join(missing_ids)}."
+                ),
+            }
+        raise CodexIntegrationError(
+            f"Codex hook input is missing {', '.join(missing_ids)}"
+        )
+    if event_name == "PostToolUse" and (
+        not isinstance(input_data.get("tool_use_id"), str)
+        or not input_data.get("tool_use_id")
+    ):
+        raise CodexIntegrationError("Codex hook input is missing tool_use_id")
     cwd = input_data.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         raise CodexIntegrationError("Codex hook input is missing cwd")
@@ -725,33 +826,18 @@ def handle_codex_hook(
         _record_post_tool_use(project_root, input_data, values)
         return None
     evidence = _load_evidence(project_root, input_data, values)
-    if input_data.get("stop_hook_active") is True and not _should_recheck_repeated_stop(
-        project_root, input_data, evidence, values
-    ):
-        return None
+    if input_data.get("stop_hook_active") is True:
+        should_evaluate, repeated_output = _repeated_stop_action(
+            project_root, input_data, evidence, values
+        )
+        if not should_evaluate:
+            return repeated_output
 
     raw_message = input_data.get("last_assistant_message")
     assistant_message = raw_message if isinstance(raw_message, str) else ""
     redacted_message = redact(assistant_message).text
     if len(redacted_message) > _MESSAGE_LIMIT:
         redacted_message = redacted_message[-_MESSAGE_LIMIT:]
-    if not _EXECUTION_CLAIM_PATTERN.search(redacted_message):
-        evaluation = {
-            "verdict": "NO_VERIFIABLE_CLAIM",
-            "claims": [],
-            "summary": "No execution claim keyword was present.",
-        }
-        _write_claim_receipt(
-            project_root,
-            input_data,
-            assistant_message,
-            evidence,
-            evaluation,
-            values,
-            "local-prefilter",
-        )
-        return None
-
     try:
         evaluation = evaluator(redacted_message, evidence, values)
     except CodexIntegrationError as error:
