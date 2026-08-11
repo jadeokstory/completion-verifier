@@ -1,7 +1,7 @@
 # Completion Verifier — Project Handoff
 
 작성일: 2026-08-11
-상태: command/file 수직 프로토타입 구현 및 검증 완료
+상태: command/file 수직 프로토타입, Codex 실행 주장 훅, ProofGate 플러그인 프로토타입 구현 완료
 
 ## 1. 목표
 
@@ -194,15 +194,23 @@ completion-verifier/
 5. 실행 전후 Git 상태, 명령·출력 해시, 파일 크기·mtime·해시 receipt
 6. 기본 secret-shape redaction과 owner-only 원자적 JSON/Markdown receipt
 7. 단위·통합 테스트 및 설치된 CLI로 네 상태 실제 검증
+8. YAML 없이 켜는 Codex `PostToolUse`/`Stop` 훅 통합
+9. 같은 턴의 명령 증거와 완료 답변을 대조하는 구조화된 `codex exec` 판정
+10. 프로젝트별 enable/disable, 전역 훅 안전 병합·제거, 재귀·반복 차단
+11. `proofgate` Codex 플러그인 manifest와 활성화·상태·비활성화 skill
+12. pip 없이 동작하는 owner-only 번들 런타임 설치와 전 프로젝트 훅 모드
+13. 플러그인 설치 경로가 바뀌어도 유지되는 안정 runtime 경로와 정확한 handler 제거
 
 다음 작업:
 
-1. 실제 외부 프로젝트 한 곳에 dogfood하고 계약 사용성을 검증한다.
-2. receipt용 별도 JSON Schema를 고정한다.
-3. `git`과 `http` verifier 계약을 설계하고 구현한다.
-4. GitHub Actions 예제와 strict required-check 흐름을 검증한다.
-5. Python 3.10–3.14 및 macOS/Linux 호환성 행렬을 CI에서 확인한다.
-6. 공개 전 최종 제품명과 PyPI/npm/GitHub 가용성을 다시 조사한다.
+1. 개인 또는 공개 marketplace entry를 만들고 실제 `codex plugin add` 설치 흐름을 검증한다.
+2. 실제 Codex OAuth 세션에서 훅을 dogfood해 `tool_response` 변형과 오탐·누락을 수집한다.
+3. 실제 외부 프로젝트 한 곳에 strict 계약도 dogfood하고 사용성을 검증한다.
+4. 훅 claim receipt 및 기존 receipt용 별도 JSON Schema를 고정한다.
+5. `git`과 `http` verifier 계약을 설계하고 구현한다.
+6. GitHub Actions 예제와 strict required-check 흐름을 검증한다.
+7. Python 3.10–3.14 및 macOS/Linux 호환성 행렬을 CI에서 확인한다.
+8. 공개 전 최종 제품명과 PyPI/npm/GitHub 가용성을 다시 조사한다.
 
 ## 11. 아직 확정하지 않은 것
 

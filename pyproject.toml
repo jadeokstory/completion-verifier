@@ -24,7 +24,10 @@ dev = ["pytest>=8"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-completion_verifier = ["completion-verifier.schema.json"]
+completion_verifier = [
+  "claim-evaluation.schema.json",
+  "completion-verifier.schema.json",
+]
 
 [tool.pytest.ini_options]
 addopts = "-q"

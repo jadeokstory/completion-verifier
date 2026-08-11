@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Completion Verifier claim evaluation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "claims", "summary"],
+  "properties": {
+    "verdict": {
+      "enum": ["SUPPORTED", "UNSUPPORTED", "NO_VERIFIABLE_CLAIM"]
+    },
+    "claims": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["claim", "status", "evidence_ids", "reason"],
+        "properties": {
+          "claim": {"type": "string"},
+          "status": {"enum": ["SUPPORTED", "UNSUPPORTED"]},
+          "evidence_ids": {
+            "type": "array",
+            "items": {"type": "string"}
+          },
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "summary": {"type": "string"}
+  }
+}

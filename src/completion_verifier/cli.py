@@ -5,6 +5,19 @@ from pathlib import Path
 from typing import Sequence
 
 from . import __version__
+from .codex_integration import (
+    CodexIntegrationError,
+    default_hooks_file,
+    disable_project,
+    enable_project,
+    handle_codex_hook,
+    hooks_installed,
+    install_hooks,
+    latest_claim_receipt,
+    project_enabled,
+    resolve_project_root,
+    uninstall_hooks,
+)
 from .contract import ContractError, DEFAULT_CONFIG_NAME, load_contract
 from .receipt import (
     DEFAULT_RECEIPT_DIR,
@@ -64,6 +77,25 @@ def _parser() -> argparse.ArgumentParser:
     report_parser.add_argument(
         "--format", choices=("markdown", "json"), default="markdown"
     )
+
+    codex_parser = subparsers.add_parser(
+        "codex", help="manage automatic Codex execution-claim verification"
+    )
+    codex_subparsers = codex_parser.add_subparsers(
+        dest="codex_command", required=True
+    )
+    for command_name in ("enable", "status"):
+        command_parser = codex_subparsers.add_parser(command_name)
+        command_parser.add_argument("--root", type=Path, default=Path.cwd())
+        command_parser.add_argument("--hooks-file", type=Path)
+    disable_parser = codex_subparsers.add_parser("disable")
+    disable_parser.add_argument("--root", type=Path, default=Path.cwd())
+    uninstall_parser = codex_subparsers.add_parser("uninstall")
+    uninstall_parser.add_argument("--hooks-file", type=Path)
+
+    hook_parser = subparsers.add_parser("hook", help=argparse.SUPPRESS)
+    hook_subparsers = hook_parser.add_subparsers(dest="hook_target", required=True)
+    hook_subparsers.add_parser("codex")
     return parser
 
 
@@ -120,6 +152,61 @@ def _report(receipt_path: Path, output_format: str) -> int:
     return 0
 
 
+def _codex_enable(root: Path, hooks_file: Path | None) -> int:
+    hooks_path = install_hooks(hooks_file)
+    project_root = enable_project(root)
+    print(f"Codex hooks installed: {hooks_path}")
+    print(f"Completion verification enabled: {project_root}")
+    print("Review and trust the hooks with /hooks in Codex, then start a new task.")
+    return 0
+
+
+def _codex_status(root: Path, hooks_file: Path | None) -> int:
+    project_root = resolve_project_root(root)
+    hooks_path = hooks_file or default_hooks_file()
+    installed = hooks_installed(hooks_path)
+    enabled = project_enabled(project_root)
+    print(f"Codex hooks: {'installed' if installed else 'not installed'} ({hooks_path})")
+    print(
+        "Current project: "
+        f"{'enabled' if enabled else 'disabled'} ({project_root})"
+    )
+    receipt = latest_claim_receipt(project_root)
+    if receipt:
+        print(
+            "Latest claim verdict: "
+            f"{receipt.get('verdict', 'unknown')} ({receipt.get('evaluated_at', 'unknown')})"
+        )
+    else:
+        print("Latest claim verdict: unavailable")
+    return 0
+
+
+def _codex_disable(root: Path) -> int:
+    project_root = disable_project(root)
+    print(f"Completion verification disabled: {project_root}")
+    return 0
+
+
+def _codex_uninstall(hooks_file: Path | None) -> int:
+    hooks_path = uninstall_hooks(hooks_file)
+    print(f"Completion Verifier handlers removed: {hooks_path}")
+    return 0
+
+
+def _codex_hook() -> int:
+    try:
+        input_data = json.load(sys.stdin)
+    except json.JSONDecodeError as error:
+        raise CodexIntegrationError(f"invalid Codex hook input: {error}") from error
+    if not isinstance(input_data, dict):
+        raise CodexIntegrationError("Codex hook input must be a JSON object")
+    output = handle_codex_hook(input_data)
+    if output is not None:
+        print(json.dumps(output, ensure_ascii=False, separators=(",", ":")))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -129,10 +216,24 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _run(args.config, args.output_dir, args.strict)
         if args.subcommand == "report":
             return _report(args.receipt, args.format)
+        if args.subcommand == "codex":
+            if args.codex_command == "enable":
+                return _codex_enable(args.root, args.hooks_file)
+            if args.codex_command == "status":
+                return _codex_status(args.root, args.hooks_file)
+            if args.codex_command == "disable":
+                return _codex_disable(args.root)
+            if args.codex_command == "uninstall":
+                return _codex_uninstall(args.hooks_file)
+        if args.subcommand == "hook" and args.hook_target == "codex":
+            return _codex_hook()
     except ContractError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     except OSError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
+    except CodexIntegrationError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     raise AssertionError(f"unhandled subcommand: {args.subcommand}")

@@ -1,15 +1,77 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from completion_verifier.cli import main
 
 
 class CliTests(unittest.TestCase):
+    def test_codex_project_management_uses_isolated_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hooks_path = root / "hooks.json"
+            state_path = root / "state"
+            env = {"COMPLETION_VERIFIER_STATE_DIR": str(state_path)}
+
+            with patch.dict(os.environ, env, clear=False):
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(
+                        main(
+                            [
+                                "codex",
+                                "enable",
+                                "--root",
+                                str(root),
+                                "--hooks-file",
+                                str(hooks_path),
+                            ]
+                        ),
+                        0,
+                    )
+                status = StringIO()
+                with redirect_stdout(status):
+                    self.assertEqual(
+                        main(
+                            [
+                                "codex",
+                                "status",
+                                "--root",
+                                str(root),
+                                "--hooks-file",
+                                str(hooks_path),
+                            ]
+                        ),
+                        0,
+                    )
+                self.assertIn("Codex hooks: installed", status.getvalue())
+                self.assertIn("Current project: enabled", status.getvalue())
+
+                with redirect_stdout(StringIO()):
+                    self.assertEqual(
+                        main(["codex", "disable", "--root", str(root)]), 0
+                    )
+                    self.assertEqual(
+                        main(
+                            [
+                                "codex",
+                                "uninstall",
+                                "--hooks-file",
+                                str(hooks_path),
+                            ]
+                        ),
+                        0,
+                    )
+
+            hooks = json.loads(hooks_path.read_text(encoding="utf-8"))["hooks"]
+            self.assertNotIn("PostToolUse", hooks)
+            self.assertNotIn("Stop", hooks)
+
     def test_init_refuses_to_overwrite(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "completion-verifier.yml"

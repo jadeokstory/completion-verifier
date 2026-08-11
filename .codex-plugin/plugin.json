@@ -1,0 +1,36 @@
+{
+  "name": "proofgate",
+  "version": "0.1.0",
+  "description": "Verify that Codex execution claims are backed by commands observed in the same turn.",
+  "author": {
+    "name": "jadeokstory",
+    "url": "https://github.com/jadeokstory"
+  },
+  "homepage": "https://github.com/jadeokstory/completion-verifier",
+  "repository": "https://github.com/jadeokstory/completion-verifier",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "hooks",
+    "verification",
+    "testing",
+    "evidence"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "ProofGate",
+    "shortDescription": "Verify Codex execution claims",
+    "longDescription": "ProofGate records command evidence and checks final execution claims at Stop time. It verifies whether claimed tests, builds, pushes, and similar actions were actually observed without reviewing code quality or rerunning commands.",
+    "developerName": "jadeokstory",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive"
+    ],
+    "defaultPrompt": [
+      "Enable ProofGate for my Codex tasks",
+      "Show my ProofGate status",
+      "Disable ProofGate hooks"
+    ],
+    "brandColor": "#16A34A"
+  }
+}
