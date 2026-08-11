@@ -1,0 +1,7 @@
+version: 1
+gate: missing-artifact
+checks:
+  - id: artifact
+    type: file
+    path: missing.txt
+    freshness: none

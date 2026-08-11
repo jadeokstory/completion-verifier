@@ -1,0 +1,12 @@
+version: 1
+gate: release-ready
+checks:
+  - id: tests
+    type: command
+    command: [python3, -m, pytest]
+    timeout_seconds: 120
+  - id: artifact
+    type: file
+    path: dist/app.tar.gz
+    freshness: run
+    min_bytes: 1

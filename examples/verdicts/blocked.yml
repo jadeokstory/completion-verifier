@@ -1,0 +1,7 @@
+version: 1
+gate: unavailable-tool
+checks:
+  - id: external-tool
+    type: command
+    command: [completion-verifier-demo-command-that-does-not-exist]
+    timeout_seconds: 5

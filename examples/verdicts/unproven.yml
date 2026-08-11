@@ -1,0 +1,7 @@
+version: 1
+gate: stale-artifact
+checks:
+  - id: artifact
+    type: file
+    path: stale.txt
+    freshness: run

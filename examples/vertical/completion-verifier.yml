@@ -1,0 +1,12 @@
+version: 1
+gate: demo-ready
+checks:
+  - id: build
+    type: command
+    command: [python3, build_demo.py]
+    timeout_seconds: 30
+  - id: artifact
+    type: file
+    path: dist/demo.txt
+    freshness: run
+    min_bytes: 1
